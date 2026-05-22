@@ -1,0 +1,148 @@
+{
+  "_meta": {
+    "company": "增赋AI（虚构主体，业务原型来自公开品牌资料）",
+    "tagline": "AI 数字员工，重塑企业增长",
+    "positioning": "不是给你一个发动机，而是交付一辆高性能整车——集成全球优秀模型 + 深度融合业务流程的企业级 AI 数字员工",
+    "delivery_model": "标准 SaaS / 私有化部署（企业版面议）",
+    "delivery_window": "标准产品 3-7 个工作日上线；定制集成视范围另议",
+    "pricing_policy": "所有定价以销售签约报价为准，本目录不发布价格；销售联系：sales@zengfu-ai.example",
+    "version": "0.1.0",
+    "last_updated": "2026-05-22"
+  },
+  "products": [
+    {
+      "product_id": "PROD-SALES-AGENT",
+      "name": "销售智能体",
+      "tagline": "把销冠能力投喂给智能体，用对话赢得客户信任",
+      "description": "面向 B 端销售团队的 AI 数字员工，主打私域 SCRM 场景下的自动化跟进、销冠话术复制、线索全周期培育。可基于历史成交对话训练专属销售人设，按客户标签自动切换话术。",
+      "solves_problems": ["卖得慢", "转化难", "线索丢"],
+      "target_industries": [
+        "教育培训", "母婴用品", "美妆护肤", "金融贷款",
+        "美业服务", "文体娱乐", "知识付费", "高端服务"
+      ],
+      "typical_use_cases": [
+        "私域社群自动跟进 + 千人千面分层转化",
+        "销冠话术 SOP 化，新销售即开即用",
+        "沉默用户唤醒（48h 内多素材开场白激活）",
+        "线索质量评分与人工接管节点判定"
+      ],
+      "key_features": [
+        {"feature_id": "FEAT-PERSONA", "name": "自定义人设", "desc": "可设置 AI 角色、语气、口头禅、行业话术风格"},
+        {"feature_id": "FEAT-TAG-ROUTE", "name": "标签化回复逻辑", "desc": "按客户标签组合切换回复策略，支持嵌套条件"},
+        {"feature_id": "FEAT-HANDOFF", "name": "关键节点转人工", "desc": "识别报价/合同/投诉等关键词自动转人工"},
+        {"feature_id": "FEAT-KB-IMPORT", "name": "一键导入知识库", "desc": "支持 PDF / DOCX / 网页 URL 投喂"},
+        {"feature_id": "FEAT-VOICE-CLONE", "name": "语音克隆", "desc": "支持销售本人音色克隆（需本人书面授权）"},
+        {"feature_id": "FEAT-AUTO-TAG", "name": "自动打标签", "desc": "对话中实时画像，输出标签到 SCRM"},
+        {"feature_id": "FEAT-LONG-MEM", "name": "长期记忆", "desc": "跨会话保留客户偏好、痛点、历史成交"},
+        {"feature_id": "FEAT-FOLLOWUP", "name": "追问策略", "desc": "对客户未回复的关键问题在自定义间隔后追问"}
+      ],
+      "delivery_window": "标准 5-7 个工作日（含 SOP 训练）",
+      "pricing": "请联系销售报价",
+      "source_id": "PROD-SALES-AGENT",
+      "evidence_refs": ["BRAND-DECK-P3", "BRAND-DECK-P11", "BRAND-DECK-P16"]
+    },
+    {
+      "product_id": "PROD-CS-AGENT",
+      "name": "客服智能体",
+      "tagline": "7x24 不眠不休，复杂情况无缝转人工",
+      "description": "面向客服与售后场景的 AI 数字员工，主打高并发咨询响应、标准化答疑、人机协同。可对接知识库、订单系统、工单系统，支持多语种回复。",
+      "solves_problems": ["响应慢", "成本高", "服务参差不齐"],
+      "target_industries": [
+        "电商", "教育培训", "金融保险", "酒店民宿",
+        "通讯电信", "物流", "健康保健", "餐饮"
+      ],
+      "typical_use_cases": [
+        "售前咨询自动应答 + 售后问题分流",
+        "FAQ + 历史客服记录投喂后的标准化答疑",
+        "夜间 / 节假日值守",
+        "多语种跨境电商客服"
+      ],
+      "key_features": [
+        {"feature_id": "FEAT-SEGMENT-REPLY", "name": "分段回复", "desc": "模拟真人节奏，按句拆分回复"},
+        {"feature_id": "FEAT-REPLY-INTERVAL", "name": "自定义回复间隔", "desc": "可配置随机或固定回复延时"},
+        {"feature_id": "FEAT-MULTILINGUAL", "name": "多语种回复", "desc": "支持中/英/日/西等主流语种自动识别"},
+        {"feature_id": "FEAT-IMG-RECOGNIZE", "name": "图片识别并触发动作", "desc": "识别截图内容（如付款截图）触发下一步流程"},
+        {"feature_id": "FEAT-MINIPROG-LINK", "name": "转发小程序链接", "desc": "AI 可主动转发预设小程序卡片"},
+        {"feature_id": "FEAT-KEYWORD-STOP", "name": "关键词触停", "desc": "识别如「谢谢」「不需要了」等关键词自动停止追问"},
+        {"feature_id": "FEAT-HANDOFF", "name": "关键节点转人工", "desc": "投诉/退款/复杂咨询自动转人工"}
+      ],
+      "delivery_window": "标准 3-5 个工作日",
+      "pricing": "请联系销售报价",
+      "source_id": "PROD-CS-AGENT",
+      "evidence_refs": ["BRAND-DECK-P3", "BRAND-DECK-P11", "BRAND-DECK-P14"]
+    },
+    {
+      "product_id": "PROD-ANALYTICS-AGENT",
+      "name": "数分智能体",
+      "tagline": "把对话数据变成增长决策",
+      "description": "面向运营负责人的 AI 数据分析助手，主打运营看板、客户画像、SOP 效果追踪、异常预警。基于销售/客服智能体产生的对话与标签数据自动生成日/周报。",
+      "solves_problems": ["洞察慢", "决策难", "机遇失"],
+      "target_industries": ["教育培训", "电商", "金融", "新消费"],
+      "typical_use_cases": [
+        "SOP 推送效果追踪（开口率 / 转化漏斗）",
+        "客户标签分布与质量评分",
+        "异常预警（如某话术开口率骤降）",
+        "运营日报自动生成"
+      ],
+      "key_features": [
+        {"feature_id": "FEAT-OPS-DASHBOARD", "name": "运营数据看板", "desc": "SOP 推送量、开口率、转化漏斗、转人工数"},
+        {"feature_id": "FEAT-QUALITY-CHECK", "name": "聊天记录质检", "desc": "异常对话预警 + 优化建议闭环"},
+        {"feature_id": "FEAT-AB-TEST", "name": "新客 SOP A/B 测", "desc": "按状态分流触达，路径可定制"},
+        {"feature_id": "FEAT-AUTO-REPORT", "name": "自动运营日报", "desc": "按预设维度生成日/周/月报"}
+      ],
+      "delivery_window": "标准 5-7 个工作日",
+      "pricing": "请联系销售报价",
+      "source_id": "PROD-ANALYTICS-AGENT",
+      "evidence_refs": ["BRAND-DECK-P12", "BRAND-DECK-P28"]
+    }
+  ],
+  "platform_capabilities": {
+    "ai_middleware": {
+      "name": "AI 中台",
+      "desc": "集成多家主流大模型，按业务路由调度；保障数据隔离与合规",
+      "source_id": "CAP-AI-MIDDLEWARE"
+    },
+    "delivery_service": {
+      "name": "全流程交付陪跑",
+      "steps": [
+        "深入业务厘清痛点",
+        "3-7 天打造专属数字员工",
+        "投喂知识让 AI 秒懂业务",
+        "长期陪跑持续优化",
+        "培养企业内部 AI 训练师"
+      ],
+      "source_id": "CAP-DELIVERY"
+    }
+  },
+  "reference_cases": [
+    {
+      "case_id": "CASE-EDU-001",
+      "industry": "家庭教育/知识付费",
+      "anonymized_name": "客户 A（家庭教育头部 IP，全网粉丝 500 万+）",
+      "scenario": "千人千面个性化推送 + 课程销售自动化",
+      "before_after": {
+        "response_time": "5 分钟/次 → 实时响应",
+        "conversion_rate": "15% → 25%",
+        "labor_efficiency": "+30% 人效"
+      },
+      "source_id": "CASE-EDU-001",
+      "evidence_refs": ["BRAND-DECK-P31", "BRAND-DECK-P34"]
+    },
+    {
+      "case_id": "CASE-IP-002",
+      "industry": "财商教育/IP 矩阵",
+      "anonymized_name": "客户 B（财商教育集团，3000+ 员工，60% 销售团队）",
+      "scenario": "AI 智能体辅助销售触达 300+ 客户，AI 账号超 1000",
+      "source_id": "CASE-IP-002",
+      "evidence_refs": ["BRAND-DECK-P27", "BRAND-DECK-P28"]
+    },
+    {
+      "case_id": "CASE-K12-003",
+      "industry": "K12 教育",
+      "anonymized_name": "客户 C（某 K12 在线教育机构）",
+      "scenario": "SOP 推送 104 万条 / 咨询客户 2.9 万 / 总咨询量 23.5 万 / 开口率 45.29%",
+      "source_id": "CASE-K12-003",
+      "evidence_refs": ["BRAND-DECK-P36", "BRAND-DECK-P37"]
+    }
+  ]
+}

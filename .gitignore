@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+.env
+.env.local
+
+.DS_Store
+.idea/
+.vscode/
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+*.log
+
+# pytest 临时 cache 目录
+pytest-cache-files-*/
