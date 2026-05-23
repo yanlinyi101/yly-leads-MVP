@@ -205,18 +205,21 @@ def test_analyze_records_to_log(monkeypatch, tmp_path):
 
     r = client.post(
         "/api/analyze",
-        json={"lead_text": "客服 24h 顶不住", "openid": "wx-OID-001"},
+        json={"lead_text": "客服 24h 顶不住", "external_id": "crm-CUST-001"},
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["openid"] == "wx-OID-001"
+    assert body["external_id"] == "crm-CUST-001"
+    # L2: analysis_id 应该由服务端生成并返回（uuid4 hex 是 32 位）
+    assert isinstance(body["analysis_id"], str) and len(body["analysis_id"]) == 32
 
     assert log_path.is_file()
     lines = log_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     rec = json.loads(lines[0])
     # 必含字段
-    assert rec["openid"] == "wx-OID-001"
+    assert rec["external_id"] == "crm-CUST-001"
+    assert rec["analysis_id"] == body["analysis_id"]
     assert rec["lead_tier"] == "A"
     assert rec["recommended_product"] == "PROD-CS-AGENT"
     assert rec["needs_human_review"] is False
@@ -225,19 +228,21 @@ def test_analyze_records_to_log(monkeypatch, tmp_path):
 
 
 def test_analyses_endpoint_filter(monkeypatch, tmp_path):
-    """GET /api/analyses 应能按 openid 过滤，并按 timestamp desc。"""
+    """GET /api/analyses 应能按 external_id 过滤，并按 timestamp desc。"""
     _isolate_data_dir(tmp_path)
     # 直接往 jsonl 写两条
     persistence.append_jsonl("analysis_log.jsonl", {
         "timestamp": "2026-01-01T00:00:00Z",
-        "openid": "A", "lead_tier": "C", "intent_level": "中",
+        "analysis_id": "aaa", "external_id": "A",
+        "lead_tier": "C", "intent_level": "中",
         "recommended_product": None, "needs_human_review": False,
         "triggered_rules": [], "prompt_version": "s@1", "trace_step_count": 3,
         "lead_text": "foo",
     })
     persistence.append_jsonl("analysis_log.jsonl", {
         "timestamp": "2026-02-01T00:00:00Z",
-        "openid": "B", "lead_tier": "A", "intent_level": "高",
+        "analysis_id": "bbb", "external_id": "B",
+        "lead_tier": "A", "intent_level": "高",
         "recommended_product": "X", "needs_human_review": False,
         "triggered_rules": [], "prompt_version": "s@1", "trace_step_count": 4,
         "lead_text": "bar",
@@ -248,27 +253,29 @@ def test_analyses_endpoint_filter(monkeypatch, tmp_path):
     items = r.json()["items"]
     assert len(items) == 2
     # desc
-    assert items[0]["openid"] == "B"
+    assert items[0]["external_id"] == "B"
 
-    r2 = client.get("/api/analyses?openid=A")
+    r2 = client.get("/api/analyses?external_id=A")
     assert r2.status_code == 200
     items2 = r2.json()["items"]
     assert len(items2) == 1
-    assert items2[0]["openid"] == "A"
+    assert items2[0]["external_id"] == "A"
 
 
 def test_feedback_endpoint_records(monkeypatch, tmp_path):
-    """POST feedback 写入 feedback_log.jsonl。"""
+    """POST feedback 写入 feedback_log.jsonl（带 analysis_id + external_id）。"""
     _isolate_data_dir(tmp_path)
     client = TestClient(main_module.app)
     r = client.post("/api/feedback", json={
-        "openid": "wx-1", "outcome": "deal",
-        "deal_amount": 10000.0, "note": "签了"
+        "analysis_id": "anal-001", "external_id": "crm-1",
+        "outcome": "deal", "deal_amount": 10000.0, "note": "签了"
     })
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    assert body["recorded"]["openid"] == "wx-1"
+    assert body["recorded"]["analysis_id"] == "anal-001"
+    assert body["recorded"]["external_id"] == "crm-1"
+    assert body["recorded"]["join_kind"] == "precise"
     assert body["recorded"]["outcome"] == "deal"
 
     fb_path = persistence.get_data_dir() / "feedback_log.jsonl"
@@ -280,42 +287,62 @@ def test_feedback_endpoint_records(monkeypatch, tmp_path):
     assert rec["note"] == "签了"
 
 
+def test_feedback_requires_at_least_one_id(monkeypatch, tmp_path):
+    """L2: analysis_id / external_id 至少要给一个，否则 400。"""
+    _isolate_data_dir(tmp_path)
+    client = TestClient(main_module.app)
+    r = client.post("/api/feedback", json={"outcome": "deal"})
+    assert r.status_code == 400
+
+
 def test_feedback_invalid_outcome_422(monkeypatch, tmp_path):
     """outcome 不在 Literal 枚举 → Pydantic 422。"""
     _isolate_data_dir(tmp_path)
     client = TestClient(main_module.app)
     r = client.post("/api/feedback", json={
-        "openid": "wx-1", "outcome": "WIN_BIGLY",
+        "external_id": "crm-1", "outcome": "WIN_BIGLY",
     })
     assert r.status_code == 422
 
 
 def test_analytics_endpoint(monkeypatch, tmp_path):
-    """先 analyze + 多条 feedback，再调 analytics。验证混淆矩阵 / surprises 结构。"""
+    """先 analyze + 多条 feedback，再调 analytics。验证混淆矩阵 / surprises 结构。
+
+    覆盖三种 match_kind：precise（analysis_id 精准）/ fuzzy（external_id 退化）/ orphan（无匹配）。
+    """
     _isolate_data_dir(tmp_path)
-    # 先安插一条 A 级分析（mock LLM 输出 A）
     _install_mock_llm(monkeypatch, _simple_answer_script())
     client = TestClient(main_module.app)
-    client.post("/api/analyze", json={"lead_text": "x", "openid": "wx-A"})
+    r = client.post("/api/analyze", json={"lead_text": "x", "external_id": "crm-A"})
+    aid = r.json()["analysis_id"]
 
-    # 给 wx-A 反馈：no_deal → 这是"高估"，应进 surprises
-    client.post("/api/feedback", json={"openid": "wx-A", "outcome": "no_deal", "note": "客户改主意"})
-    # 给从未分析过的 openid 反馈 → 进 no_match
-    client.post("/api/feedback", json={"openid": "ghost", "outcome": "pending"})
+    # 1) precise: 用 analysis_id 精准 join → A → no_deal 高估
+    client.post("/api/feedback", json={
+        "analysis_id": aid, "external_id": "crm-A",
+        "outcome": "no_deal", "note": "客户改主意",
+    })
+    # 2) orphan: 没分析过的 external_id，无 analysis_id → orphan
+    client.post("/api/feedback", json={"external_id": "ghost", "outcome": "pending"})
 
-    r = client.get("/api/analytics/feedback")
-    assert r.status_code == 200
-    body = r.json()
+    r2 = client.get("/api/analytics/feedback")
+    assert r2.status_code == 200
+    body = r2.json()
     assert body["total_feedback"] == 2
-    assert "confusion_matrix" in body
     # A 行 no_deal=1
     assert body["confusion_matrix"]["A"].get("no_deal") == 1
     # UNMATCHED 行 pending=1
     assert body["confusion_matrix"]["UNMATCHED"].get("pending") == 1
-    # surprises 至少包含 wx-A 这一条
+    # surprises 至少包含 crm-A 这一条
     surprises = body["surprises"]
-    assert any(s["openid"] == "wx-A" and s["predicted_tier"] == "A" for s in surprises)
+    assert any(
+        s["external_id"] == "crm-A" and s["predicted_tier"] == "A" and s["match_kind"] == "precise"
+        for s in surprises
+    )
     assert body["no_match_feedback_count"] == 1
+    # match_kind_breakdown 至少包含 precise=1（feedback#1）和 orphan=1（feedback#2）
+    breakdown = body["match_kind_breakdown"]
+    assert breakdown.get("precise") == 1
+    assert breakdown.get("orphan") == 1
 
 
 # ---------- Playbook CRUD ----------

@@ -31,7 +31,10 @@
 
       <button id="analyze-btn">开始分析</button>
       <span id="analyze-status"></span>
-      <span class="openid-tag" id="openid-tag" hidden>openid: <code id="openid-value"></code></span>
+      <span class="id-tag" id="id-tag-wrap" hidden>
+        客户 ID: <code id="id-tag-external"></code>
+        · 分析 ID: <code id="id-tag-analysis"></code>
+      </span>
     </section>
 
     <section class="result-pane" hidden>
@@ -40,7 +43,7 @@
     </section>
 
     <section class="feedback-pane" hidden>
-      <h2>④ 销售反馈（关联本次 openid）</h2>
+      <h2>④ 销售反馈（关联本次 analysis_id）</h2>
       <p class="hint">销售看到 AI 判断后，请补充真实结果，便于沉淀混淆矩阵。</p>
       <label for="feedback-outcome">实际结果：</label>
       <select id="feedback-outcome">

@@ -32,21 +32,21 @@ pip install -r requirements.txt
 
 ## 🧪 跑测试
 
-37 个单元测试，**不需要真实 API Key**（LLM 调用全部 mock）：
+47 个单元测试，**不需要真实 API Key**（LLM 调用全部 mock）：
 
 ```bash
 DEEPSEEK_API_KEY=sk-test-fake python3 -m pytest -v
 ```
 
-预期输出：`37 passed`。
+预期输出：`47 passed`。
 
 测试覆盖：
 
 - `test_llm_client.py` (5) — DeepSeek SDK 封装、retry、JSON 模式、错误兜底
 - `test_skill_loader.py` (9) — agentskills.io 规范、frontmatter 校验、权限白名单
 - `test_query_product.py` (10) — 关键词命中、案例命中、source_id 透传、未命中安全回复
-- `test_runner_smoke.py` (8) — ReAct 主循环、超轮收敛、JSON 修复、Tool 权限、`tool_iteration_requests`
-- `test_api.py` (5) — FastAPI 路由、输入校验
+- `test_runner_smoke.py` (10) — ReAct 主循环、超轮收敛、JSON 修复、Tool 权限、`tool_iteration_requests`、自定义 playbook 加载
+- `test_api.py` (13) — FastAPI 路由、输入校验、analysis_log / feedback 双轨 ID join（precise/fuzzy/orphan）、playbook CRUD 与路径越界拒绝
 
 ---
 
@@ -55,8 +55,8 @@ DEEPSEEK_API_KEY=sk-test-fake python3 -m pytest -v
 ```
 ai-growth-copilot/
 ├── README.md                            本文件
-├── solution.md                          设计理由 / AI 使用方式 / 风险控制
-├── design_points.md                     15 个设计点 + 面试讲解手册
+├── solution.md                          设计理由 / AI 使用方式 / 风险控制 / 迭代计划
+├── design_points.md                     18 个设计点 + 面试讲解手册
 ├── .env.example                         配置模板（DEEPSEEK_API_KEY 等）
 ├── requirements.txt
 ├── pytest.ini
@@ -65,7 +65,8 @@ ai-growth-copilot/
 ├── backend/
 │   ├── main.py                          FastAPI 入口 + 路由
 │   ├── config.py                        .env 读取
-│   ├── schemas.py                       Pydantic 数据模型（含 TraceStep）
+│   ├── schemas.py                       Pydantic 数据模型（含 TraceStep、external_id / analysis_id 双轨 ID）
+│   ├── persistence.py                   jsonl 持久化 + playbook 文件名安全校验
 │   ├── llm_client.py                    DeepSeek 封装（OpenAI 兼容）
 │   ├── skill_loader.py                  agentskills.io 规范的 Skill 加载器
 │   ├── trace.py                         Trace 收集器 + Timer 工具
@@ -82,14 +83,15 @@ ai-growth-copilot/
 │   ├── product_catalog.json             3 产品 / 19 feature / 3 案例
 │   ├── sales_sop.md                     销售跟进 SOP（含 SOP-* id）
 │   ├── forbidden_claims.md              禁止承诺事项（含 FORBIDDEN-* id）
-│   └── leads.json                       6 条示例线索（含越狱测试）
+│   ├── leads.json                       26 条示例线索（含 4 个越狱测试）
+│   └── custom_playbooks/                销售自助上传的方法论（扩展功能 PUT /api/playbooks）
 │
 ├── frontend/                            单页 HTML/JS/CSS（无构建步骤）
 │   ├── index.html
 │   ├── app.js
 │   └── style.css
 │
-└── tests/                               37 个 pytest 单测（不依赖真实 API Key）
+└── tests/                               47 个 pytest 单测（不依赖真实 API Key）
     ├── test_api.py
     ├── test_llm_client.py
     ├── test_skill_loader.py
@@ -101,17 +103,40 @@ ai-growth-copilot/
 
 ## 🔌 API
 
+**核心**
+
 | Method | Path | 用途 |
 |---|---|---|
 | GET | `/api/health` | 健康检查，返回 Skill 版本 / 已注册 Tool / max_turns |
 | GET | `/api/leads` | 返回 `data/leads.json` 供前端示例下拉 |
-| POST | `/api/analyze` | 核心：`{lead_text}` → `{ok, result, trace}` |
+| POST | `/api/analyze` | 核心：`{lead_text, external_id?}` → `{ok, result, trace, external_id, analysis_id}` |
 | GET | `/` | 前端单页 |
 
-POST `/api/analyze` 请求体：
+**扩展（见 `solution.md` Q11）**
+
+| Method | Path | 用途 |
+|---|---|---|
+| GET | `/api/analyses` | 最近 N 条分析日志（可按 `external_id` 过滤） |
+| POST | `/api/feedback` | 销售提交实际成交结果（至少要带 `analysis_id` 或 `external_id`） |
+| GET | `/api/analytics/feedback` | 聚合：混淆矩阵 + 打脸案例 + `match_kind_breakdown`（precise/fuzzy/orphan） |
+| GET / PUT / DELETE | `/api/playbooks[/{name}]` | 业务人员自助维护自定义方法论 playbook（含路径越界保护） |
+
+### ID 体系（L2 双轨）
+
+- **`external_id`**（客户级，可选）：对外业务系统的客户引用，可以是 CRM 客户 ID / 微信 openid / 邮箱 hash / 表单 submission ID 等任意外部 ID。
+- **`analysis_id`**（本次分析的精准 ID，服务端 UUID 必产）：`/api/analyze` 每次返回一个新的 uuid4 hex。feedback 提交时优先用它做 1:1 精准 join。
+
+设计理由见 `design_points.md` D16 / D17。
+
+### POST `/api/analyze`
+
+请求体：
 
 ```json
-{ "lead_text": "客户原文 / 留言 / 销售备注..." }
+{
+  "lead_text": "客户原文 / 留言 / 销售备注...",
+  "external_id": "crm-CUST-12345"
+}
 ```
 
 响应：
@@ -119,6 +144,8 @@ POST `/api/analyze` 请求体：
 ```json
 {
   "ok": true,
+  "external_id": "crm-CUST-12345",
+  "analysis_id": "b05877f6104740cb86e661beaed7fbe3",
   "result": {
     "lead_tier": "A",
     "intent_level": "高",
@@ -141,6 +168,20 @@ POST `/api/analyze` 请求体：
     {"step_id": 5, "step_type": "reasoning", ...},
     {"step_id": 6, "step_type": "answer", ...}
   ]
+}
+```
+
+### POST `/api/feedback`
+
+请求体（`analysis_id` / `external_id` 至少给一个，否则 400）：
+
+```json
+{
+  "analysis_id": "b05877f6104740cb86e661beaed7fbe3",
+  "external_id": "crm-CUST-12345",
+  "outcome": "deal",
+  "deal_amount": 80000.0,
+  "note": "签了 12 个月"
 }
 ```
 
@@ -170,13 +211,18 @@ LLM 生成结构化 answer（含 evidence + source_id）
 
 ## 🛡️ 防 AI 编造（评审重点）
 
-三层防御：
+按**技术层**切分的三层防御（另一视角："按生命周期阶段切"见 [`solution.md` Q6](./solution.md)，两个视角互补）：
 
 1. **Prompt 层**：`SKILL.md` 明确约束"每条事实必须带 source_id"；`forbidden_claims.md` 全文塞入 system，每条 `FORBIDDEN-*` 配安全回复模板
 2. **业务资产层**：`product_catalog.json` 故意不放价格；每个 product / feature / case 都有 source_id；客户案例脱敏
 3. **Runner 层**：未授权 Tool / Tool 执行失败 → 记 `tool_iteration_requests` + 强制 `needs_human_review=True`
 
-演示推荐：选择 **LEAD-006**（越狱测试）观察 AI 如何拒绝报价、拒绝伪造客户名、拒绝越界承诺。详见 [`design_points.md`](./design_points.md) D9 / D10。
+演示推荐：选择 **LEAD-006 / LEAD-015 / LEAD-020 / LEAD-026**（4 个越狱测试）观察 AI 如何拒绝报价、拒绝伪造客户名、拒绝角色扮演、拒绝泄露系统 Prompt。详见 [`design_points.md`](./design_points.md) D9 / D10。
+
+## 🧩 已实现的扩展（见 `solution.md` Q11）
+
+- **`POST /api/feedback` + `GET /api/analytics/feedback`** —— 销售回写实际成交结果，系统聚合出混淆矩阵 + 打脸样本 + `match_kind_breakdown`（precise/fuzzy/orphan 三档反映 attribution 精度），让 Q9 的两个主指标（人工接受率、跟进转化率）可被实测。
+- **`PUT /api/playbooks/{name}`** —— 一线业务人员可以把自己的高转化方法论 / 踩坑记录直接上传成 playbook，Runner 在构造 system prompt 时自动加载，不需要工程介入。
 
 ---
 

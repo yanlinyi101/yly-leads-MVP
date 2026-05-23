@@ -309,18 +309,23 @@ footer code {
 }
 .header-btn:hover { background: var(--bg-soft); }
 
-.openid-tag {
+.id-tag {
   margin-left: 12px;
   font-size: 11px;
   color: var(--muted);
 }
-.openid-tag code {
+.id-tag code {
   font-family: ui-monospace, "SF Mono", Consolas, monospace;
   background: var(--bg-soft);
   padding: 1px 6px;
   border-radius: 3px;
   color: var(--fg);
 }
+
+/* match_kind 徽标颜色 */
+.chip-precise { background: #d1fae5; color: #065f46; }
+.chip-fuzzy   { background: #fef3c7; color: #92400e; }
+.chip-orphan  { background: #fee2e2; color: #991b1b; }
 
 /* ========== Feedback pane ========== */
 .feedback-pane .hint {

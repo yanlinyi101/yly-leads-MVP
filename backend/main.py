@@ -4,8 +4,8 @@ FastAPI 入口
 路由：
   GET  /api/health                健康检查
   GET  /api/leads                 返回示例线索列表（前端下拉用）
-  POST /api/analyze               核心：吃线索 → 跑 Runner → 返回 {result, trace}
-  GET  /api/analyses              最近 N 条分析日志（可按 openid 过滤）
+  POST /api/analyze               核心：吃线索 → 跑 Runner → 返回 {result, trace, analysis_id}
+  GET  /api/analyses              最近 N 条分析日志（可按 external_id 过滤）
 
   POST /api/feedback              销售提交"实际成交结果"
   GET  /api/analytics/feedback    聚合：混淆矩阵 + 打脸案例 + 数据一致性
@@ -21,12 +21,14 @@ FastAPI 入口
   - Runner 实例每次请求都新建（每个请求一个独立 TraceCollector）
   - LLMClient / Skill / ToolRegistry 在应用启动时初始化一次，跨请求复用
   - 分析日志 / 反馈日志 / playbook 都走 backend.persistence
-  - openid 不做格式校验（外部 ID 我们不约束格式），但反馈端 openid 必填
+  - external_id（客户级 ID）不做格式校验，外部业务系统可接微信 openid / CRM 客户 ID 等
+  - analysis_id（本次分析的精准 ID）由服务端生成 UUID，回传给前端，feedback 优先按此 join
 """
 from __future__ import annotations
 
 import json
 import logging
+import uuid
 from collections import Counter
 from pathlib import Path
 from typing import Optional
@@ -189,7 +191,8 @@ def _extract_prompt_version_from_trace(trace_steps: list) -> Optional[str]:
 
 def _record_analysis(
     *,
-    openid: Optional[str],
+    analysis_id: str,
+    external_id: Optional[str],
     lead_text: str,
     answer: dict,
     trace_steps: list,
@@ -200,7 +203,8 @@ def _record_analysis(
     """
     record = {
         "timestamp": iso_now(),
-        "openid": openid,
+        "analysis_id": analysis_id,
+        "external_id": external_id,
         # 截断防爆：500 字以内，超出加省略号
         "lead_text": (lead_text[:500] + "…") if len(lead_text) > 500 else lead_text,
         "lead_tier": answer.get("lead_tier"),
@@ -224,14 +228,20 @@ def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
 
     返回结构：
       ok=True 永远（即便 Runner 走了兜底分支，兜底 answer 也是合法 result）
-      result = answer dict
-      trace  = list[TraceStep]
-      openid = 原样回传
-      error  = 仅在路由层硬错误（Skill 加载失败、LLMClient 初始化失败等）时填
+      result      = answer dict
+      trace       = list[TraceStep]
+      external_id = 原样回传（客户级，用于客户维度的反馈聚合）
+      analysis_id = 本次分析的精准 ID（UUID），前端做 feedback 时带回来即可精准 join
+      error       = 仅在路由层硬错误（Skill 加载失败、LLMClient 初始化失败等）时填
     """
     lead_text = (req.lead_text or "").strip()
     if not lead_text:
         raise HTTPException(status_code=400, detail="lead_text 不能为空")
+
+    # 每次 analyze 都生成一个全新的 analysis_id（uuid4 hex）。
+    # 这是 L2 重构的核心：把"客户维度"和"单次分析维度"解耦——
+    # 前者用 external_id（同一客户多次咨询共享），后者用 analysis_id（每次唯一）。
+    analysis_id = uuid.uuid4().hex
 
     try:
         skill = _get_skill()
@@ -240,7 +250,10 @@ def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
     except RuntimeError as e:
         # 启动期资源缺失（如 API key 没配）→ 这是 5xx 性质的故障
         logger.exception("依赖初始化失败")
-        return AnalyzeResponse(ok=False, error=str(e), trace=[], openid=req.openid)
+        return AnalyzeResponse(
+            ok=False, error=str(e), trace=[],
+            external_id=req.external_id, analysis_id=analysis_id,
+        )
 
     trace = TraceCollector()
     runner = ReActRunner(llm=llm, skill=skill, tools=tools, trace=trace)
@@ -255,12 +268,14 @@ def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
             ok=False,
             error=f"内部错误：{e}",
             trace=trace.steps(),
-            openid=req.openid,
+            external_id=req.external_id,
+            analysis_id=analysis_id,
         )
 
     # 即便走了兜底分支也要记日志，这样反馈环可以看到"AI 当时给了什么判断"
     _record_analysis(
-        openid=req.openid,
+        analysis_id=analysis_id,
+        external_id=req.external_id,
         lead_text=lead_text,
         answer=result.answer,
         trace_steps=trace.steps(),
@@ -270,22 +285,23 @@ def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
         ok=True,
         result=result.answer,
         trace=trace.steps(),
-        openid=req.openid,
+        external_id=req.external_id,
+        analysis_id=analysis_id,
     )
 
 
 @app.get("/api/analyses")
 def list_analyses(
     limit: int = Query(20, ge=1, le=200),
-    openid: Optional[str] = None,
+    external_id: Optional[str] = None,
 ) -> dict:
     """最近 N 条分析日志（timestamp desc）。
 
-    可选 openid 过滤：用于在前端"该客户的历史分析"视图。
+    可选 external_id 过滤：用于在前端"该客户的历史分析"视图。
     """
     rows = read_jsonl(ANALYSIS_LOG)
-    if openid:
-        rows = [r for r in rows if r.get("openid") == openid]
+    if external_id:
+        rows = [r for r in rows if r.get("external_id") == external_id]
     # 直接按时间字符串倒排即可（ISO8601 字典序 = 时间序）
     rows.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
     return {"items": rows[:limit], "total": len(rows)}
@@ -301,10 +317,20 @@ def post_feedback(req: FeedbackRequest) -> dict:
 
     刻意不在这一步 join analysis_log——保持写入路径轻量，
     join 留到 analytics 查询时再做（多次反馈也允许，按时间序保存）。
+
+    L2 重构：feedback 同时支持 analysis_id（精准维度）和 external_id（客户维度）。
+    至少要提供一个；都不给视为非法请求。
     """
+    if not req.analysis_id and not req.external_id:
+        raise HTTPException(
+            status_code=400,
+            detail="必须至少提供 analysis_id 或 external_id 中的一个",
+        )
     record = {
         "timestamp": iso_now(),
-        "openid": req.openid,
+        "analysis_id": req.analysis_id,
+        "external_id": req.external_id,
+        "join_kind": req.join_key_kind(),     # precise / fuzzy / orphan
         "outcome": req.outcome,
         "deal_amount": req.deal_amount,
         "note": req.note,
@@ -334,58 +360,80 @@ def feedback_analytics() -> dict:
 
     - total_feedback        反馈总数
     - confusion_matrix      预测 tier × outcome 的混淆矩阵
-                            外层 dict 始终包含 A/B/C/D 四个 key，内层只填出现过的 outcome
+                            外层 dict 始终包含 A/B/C/D 四个 key + UNMATCHED 行
     - surprises             "AI 高估/低估"的样本（最多 10 条，按 timestamp desc）
     - no_match_feedback_count
-                            feedback 中 openid 在 analysis_log 找不到的数量
-                            （数据一致性指标：销售有没有给"没分析过"的 openid 提反馈？）
+                            feedback 无法 join 到 analysis_log 的数量（数据一致性指标）
+    - match_kind_breakdown  precise / fuzzy / orphan 三档计数，让评审一眼看出
+                            "有多少 feedback 是精准回填、多少是退化到客户维度模糊匹配的"
 
-    实现策略：
-      - 每条 feedback 用 openid join 最近一次 analysis_log
-        （为什么取最近一次：同一个 openid 可能被分析多次；以销售收到反馈时刻
-        前的最新一次预测为准，更接近"销售当时看到的 AI 建议"）
+    L2 重构后的 join 策略：
+      1. 优先：feedback.analysis_id → analysis_log 的 analysis_id 精准 1:1 join
+      2. 退化：feedback.external_id → 最近一次 analysis（仅当 analysis_id 缺失时）
+      3. 无：feedback 既无 analysis_id 也无 external_id → 进 orphan，不参与混淆矩阵
     """
     analyses = read_jsonl(ANALYSIS_LOG)
     feedbacks = read_jsonl(FEEDBACK_LOG)
 
-    # 按 openid -> 最新一次 analysis 建索引（max timestamp）
-    latest_by_openid: dict[str, dict] = {}
+    # 两套索引：
+    #   - by_analysis_id：精准 1:1 关联（L2 重构后的主路径）
+    #   - latest_by_external_id：退化 fallback（兼容前 L2 数据 / 线下手填 feedback）
+    by_analysis_id: dict[str, dict] = {}
+    latest_by_external_id: dict[str, dict] = {}
     for row in analyses:
-        oid = row.get("openid")
-        if not oid:
-            continue
-        prev = latest_by_openid.get(oid)
-        if prev is None or row.get("timestamp", "") > prev.get("timestamp", ""):
-            latest_by_openid[oid] = row
+        aid = row.get("analysis_id")
+        if aid:
+            by_analysis_id[aid] = row
+        eid = row.get("external_id")
+        if eid:
+            prev = latest_by_external_id.get(eid)
+            if prev is None or row.get("timestamp", "") > prev.get("timestamp", ""):
+                latest_by_external_id[eid] = row
 
-    # 混淆矩阵：A/B/C/D 四行（未匹配的归到 "UNMATCHED" 一行以便审计）
+    # 混淆矩阵：A/B/C/D 四行（未匹配的归到 UNMATCHED 一行）
     matrix: dict[str, Counter] = {tier: Counter() for tier in ("A", "B", "C", "D")}
     matrix["UNMATCHED"] = Counter()
 
     surprises: list[dict] = []
     no_match = 0
+    match_kind_counter: Counter = Counter()
 
     for fb in feedbacks:
-        oid = fb.get("openid")
         outcome = fb.get("outcome")
-        if not oid or not outcome:
+        if not outcome:
             continue
-        match = latest_by_openid.get(oid)
+
+        aid = fb.get("analysis_id")
+        eid = fb.get("external_id")
+
+        match = None
+        match_kind = "orphan"
+        if aid:
+            match = by_analysis_id.get(aid)
+            match_kind = "precise" if match else "orphan"
+        if match is None and eid:
+            match = latest_by_external_id.get(eid)
+            match_kind = "fuzzy" if match else "orphan"
+
+        match_kind_counter[match_kind] += 1
+
         if match is None:
             no_match += 1
             matrix["UNMATCHED"][outcome] += 1
             continue
+
         tier = match.get("lead_tier") or "UNMATCHED"
         if tier not in matrix:
-            # 未知 tier（理论上不该发生；防呆）
             matrix[tier] = Counter()
         matrix[tier][outcome] += 1
 
-        # 判断"打脸"
+        # 判断"打脸"——精准 + 模糊匹配都参与，但样本里携带 match_kind 让审计能区分
         for surprise_tier, surprise_outcomes in _SURPRISE_RULES:
             if tier == surprise_tier and outcome in surprise_outcomes:
                 surprises.append({
-                    "openid": oid,
+                    "analysis_id": aid,
+                    "external_id": eid,
+                    "match_kind": match_kind,
                     "predicted_tier": tier,
                     "outcome": outcome,
                     "note": fb.get("note"),
@@ -393,7 +441,6 @@ def feedback_analytics() -> dict:
                 })
                 break
 
-    # Counter → dict 便于 JSON 输出
     matrix_out = {tier: dict(c) for tier, c in matrix.items()}
     surprises.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
 
@@ -402,6 +449,7 @@ def feedback_analytics() -> dict:
         "confusion_matrix": matrix_out,
         "surprises": surprises[:10],
         "no_match_feedback_count": no_match,
+        "match_kind_breakdown": dict(match_kind_counter),
     }
 
 

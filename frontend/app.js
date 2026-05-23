@@ -1,9 +1,10 @@
 // AI Growth Copilot · 前端单页
 // 设计要点：
 //   - 没有任何构建工具，原生 JS
-//   - 每次点"开始分析"重新生成一个 openid（视为一条新线索）
-//   - openid 全局只存在 window.currentOpenid（不写 localStorage，避免艺术家洁癖）
-//   - 反馈卡片：在 analyze 成功且有 openid 时才显示
+//   - 每次点"开始分析"重新生成一个 demo external_id（视为一条新客户）；
+//     服务端再生成 analysis_id（UUID），feedback 时优先用 analysis_id 精准 join
+//   - window.currentExternalId / window.currentAnalysisId 全局存（不写 localStorage）
+//   - 反馈卡片：在 analyze 成功且有 analysis_id 时才显示
 //   - 顶栏 "📚 方法论" 浮层：CRUD 自定义 playbook
 //   - 顶栏 "📊 反馈统计" 浮层：拉 /api/analytics/feedback 渲染混淆矩阵 / 打脸案例
 
@@ -13,13 +14,14 @@
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-  // openid 名字校验（前端先拦一道，后端二次校验是权威）
+  // playbook 文件名校验（前端先拦一道，后端二次校验是权威）
   const PLAYBOOK_NAME_RE = /^[a-zA-Z0-9_\-]{1,40}$/;
 
   // -------- 初始化 --------
 
   async function init() {
-    window.currentOpenid = null;
+    window.currentExternalId = null;
+    window.currentAnalysisId = null;
     await Promise.all([loadHealth(), loadLeads()]);
     $('#analyze-btn').addEventListener('click', onAnalyze);
     $('#lead-select').addEventListener('change', onSelectLead);
@@ -40,8 +42,8 @@
     $('#pb-delete-btn').addEventListener('click', onDeletePlaybook);
   }
 
-  // 生成新 openid（每次点"开始分析"调用）
-  function freshOpenid() {
+  // 生成新的 demo external_id（每次点"开始分析"调用，模拟新客户）
+  function freshExternalId() {
     return 'demo-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
   }
 
@@ -125,10 +127,13 @@
     $('.trace-pane').hidden = true;
     $('.feedback-pane').hidden = true;
 
-    // 每次点击"开始分析"重新生成 openid（视为新一条线索）
-    window.currentOpenid = freshOpenid();
-    $('#openid-value').textContent = window.currentOpenid;
-    $('#openid-tag').hidden = false;
+    // 每次点击"开始分析"重新生成 external_id（视为新一条线索 / 模拟新客户）
+    // 服务端会再生成 analysis_id 回传，存到 window.currentAnalysisId
+    window.currentExternalId = freshExternalId();
+    window.currentAnalysisId = null;
+    $('#id-tag-external').textContent = window.currentExternalId;
+    $('#id-tag-analysis').textContent = '（待返回）';
+    $('#id-tag-wrap').hidden = false;
     // 清空反馈表单
     $('#feedback-status').textContent = '';
     $('#feedback-note').value = '';
@@ -140,7 +145,7 @@
       const r = await fetch('/api/analyze', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({lead_text: text, openid: window.currentOpenid}),
+        body: JSON.stringify({lead_text: text, external_id: window.currentExternalId}),
       });
       const body = await r.json();
       const ms = Math.round(performance.now() - t0);
@@ -148,11 +153,16 @@
       if (!body.ok) {
         alert('分析失败：' + body.error);
       }
+      // 即便兜底分支，body.analysis_id 也应该有
+      if (body.analysis_id) {
+        window.currentAnalysisId = body.analysis_id;
+        $('#id-tag-analysis').textContent = body.analysis_id.slice(0, 8) + '…';
+      }
       if (body.result) {
         renderResult(body.result);
         $('.result-pane').hidden = false;
-        // 只要本次分析挂上了 openid，反馈卡片就可用
-        if (window.currentOpenid) {
+        // 只要本次分析返回了 analysis_id，反馈卡片就可用
+        if (window.currentAnalysisId) {
           $('.feedback-pane').hidden = false;
         }
       }
@@ -171,12 +181,13 @@
   // -------- 反馈 --------
 
   async function onSubmitFeedback() {
-    if (!window.currentOpenid) {
-      alert('当前没有 openid，请先点"开始分析"');
+    if (!window.currentAnalysisId) {
+      alert('当前没有 analysis_id，请先点"开始分析"');
       return;
     }
     const payload = {
-      openid: window.currentOpenid,
+      analysis_id: window.currentAnalysisId,
+      external_id: window.currentExternalId,    // 同时携带，方便客户维度聚合
       outcome: $('#feedback-outcome').value,
       note: $('#feedback-note').value || null,
     };
@@ -474,9 +485,11 @@
       // 顶部统计
       const top = document.createElement('div');
       top.className = 'analytics-top';
+      const breakdown = body.match_kind_breakdown || {};
       top.innerHTML = `
         <span class="stat-pill">总反馈 <b>${body.total_feedback}</b></span>
-        <span class="stat-pill">未匹配 openid <b>${body.no_match_feedback_count}</b></span>
+        <span class="stat-pill">未匹配 <b>${body.no_match_feedback_count}</b></span>
+        <span class="stat-pill">精准/模糊/孤立 <b>${breakdown.precise || 0}/${breakdown.fuzzy || 0}/${breakdown.orphan || 0}</b></span>
         <span class="stat-pill">打脸 <b>${(body.surprises || []).length}</b></span>
       `;
       dest.appendChild(top);
@@ -529,8 +542,15 @@
         ul.className = 'surprises';
         body.surprises.forEach(s => {
           const li = document.createElement('li');
+          // 优先展示 analysis_id（精准），fallback 到 external_id；同时 badge 一下 match_kind
+          const idLabel = s.analysis_id
+            ? `<code title="${esc(s.analysis_id)}">${esc(s.analysis_id.slice(0, 8))}…</code>`
+            : `<code>${esc(s.external_id || '—')}</code>`;
+          const kindBadge = s.match_kind
+            ? `<span class="chip chip-${esc(s.match_kind)}">${esc(s.match_kind)}</span>`
+            : '';
           li.innerHTML = `
-            <code>${esc(s.openid)}</code> ·
+            ${idLabel} ${kindBadge} ·
             预测 <b>${esc(s.predicted_tier)}</b> →
             实际 <b>${esc(s.outcome)}</b>
             <span class="ts">${esc(s.timestamp)}</span>

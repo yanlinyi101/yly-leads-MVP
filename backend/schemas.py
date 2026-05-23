@@ -1,10 +1,21 @@
 """
 Pydantic 模型：API 输入输出 + 内部数据结构
 
-注意：
-  - openid 是"对外业务系统的客户/会话 ID"（如微信 openid / CRM 客户 ID）；
-    本项目不解析 openid 内容，只把它作为 join key 关联 analysis_log 与 feedback_log。
-  - Outcome 用 Literal 限制枚举值，让 FastAPI 自动 422，非合法值不会进入业务层。
+ID 体系说明（L2 重构后）：
+  - external_id：对外业务系统的"客户级"标识（如 CRM 客户 ID / 微信 openid / 邮箱 hash /
+    官网表单 submission ID 等任意来源的客户引用）。本项目不解析其内容，只作为
+    customer-level 的 join 维度。可选——非微信源 / 匿名表单也允许为空。
+  - analysis_id：本次 /api/analyze 调用的精准 ID（UUID，服务端生成，回传给前端）。
+    feedback 提交时优先用 analysis_id 做精准 join，避免"同一客户多次咨询 attribution 模糊"
+    的问题。是 analysis-level 的 join 维度。
+
+  customer 维度（external_id）和 analysis 维度（analysis_id）解耦：
+    - 一个 external_id 可以对应 N 个 analysis_id（同一客户多次咨询）
+    - 一条 feedback 通过 analysis_id 精准回填到某一次分析
+    - 若 feedback 仅带 external_id（如线下手填），fallback 到"最近一次 analysis"做 join，
+      但会被 analytics 标记为模糊匹配，不影响精准样本计数
+
+  Outcome 用 Literal 限制枚举值，让 FastAPI 自动 422，非合法值不会进入业务层。
 """
 from typing import Any, Optional, Literal
 from pydantic import BaseModel, Field
@@ -17,9 +28,9 @@ from pydantic import BaseModel, Field
 class AnalyzeRequest(BaseModel):
     lead_text: str = Field(..., description="线索原始文本，可包含来源/公司/留言等")
     lead_id: Optional[str] = Field(None, description="可选，用于追踪")
-    openid: Optional[str] = Field(
+    external_id: Optional[str] = Field(
         None,
-        description="外部业务 ID（如微信 openid / CRM 客户 ID），用于关联反馈与成交结果",
+        description="客户级外部 ID（CRM 客户 ID / 微信 openid / 邮箱 hash 等），用于客户维度的反馈聚合",
     )
 
 
@@ -42,7 +53,11 @@ class AnalyzeResponse(BaseModel):
     result: Optional[dict] = None
     trace: list[TraceStep] = []
     error: Optional[str] = None
-    openid: Optional[str] = Field(None, description="原样回传，便于前端关联反馈")
+    external_id: Optional[str] = Field(None, description="原样回传，客户级关联用")
+    analysis_id: Optional[str] = Field(
+        None,
+        description="本次分析的精准 ID（服务端 UUID）。feedback 提交时带上即可精准回填",
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -58,12 +73,27 @@ Outcome = Literal["deal", "no_deal", "pending", "lost"]
 
 
 class FeedbackRequest(BaseModel):
-    openid: str = Field(..., description="必填，关联 analysis_log")
+    analysis_id: Optional[str] = Field(
+        None,
+        description="本次分析的精准 ID（推荐携带）。若提供，将精准 join 到该次 analysis_log",
+    )
+    external_id: Optional[str] = Field(
+        None,
+        description="客户级外部 ID。若未提供 analysis_id 则用此作为 fallback join key",
+    )
     outcome: Outcome = Field(..., description="销售确认的最终结果")
     deal_amount: Optional[float] = Field(
         None, ge=0, description="成交金额（仅 outcome=deal 时有意义）"
     )
     note: Optional[str] = Field(None, description="备注，描述真实情境")
+
+    def join_key_kind(self) -> str:
+        """返回这条 feedback 用于 join 的维度标签，方便 analytics 标注精度。"""
+        if self.analysis_id:
+            return "precise"      # analysis_id 精准
+        if self.external_id:
+            return "fuzzy"        # external_id + 最近一次，模糊
+        return "orphan"           # 两者都没有，无法 join
 
 
 # -----------------------------------------------------------------------------

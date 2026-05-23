@@ -20,3 +20,8 @@ htmlcov/
 
 # pytest 临时 cache 目录
 pytest-cache-files-*/
+
+# 临时评估脚本与输出（候选人本机评估用，不入仓库）
+_eval_run.py
+_eval_print.py
+_eval_out.jsonl

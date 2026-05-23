@@ -25,7 +25,7 @@
 | D13 | 兜底 answer 的保守缺省值 | `runner.py` | ⭐ |
 | D14 | DI 注入便于测试 | `runner.py` `tests/*` | ⭐ |
 | D15 | `===` 边界包裹防 prompt injection | `runner.py` | ⭐ |
-| D16 | openid 追踪 + 分析日志 | `main.py` `persistence.py` `schemas.py` | ⭐⭐ |
+| D16 | external_id + analysis_id 双轨 ID 体系 + 分析日志 | `main.py` `persistence.py` `schemas.py` | ⭐⭐⭐ |
 | D17 | 反馈闭环 + 混淆矩阵 | `main.py` `persistence.py` | ⭐⭐⭐ |
 | D18 | 销售自定义 Playbook 沉淀方法论 | `runner.py` `main.py` `persistence.py` `data/custom_playbooks/` | ⭐⭐⭐ |
 
@@ -715,28 +715,36 @@ def _build_user_prompt(self, lead_text: str) -> str:
 
 ---
 
-## D16 · openid 追踪 + 分析日志
+## D16 · external_id + analysis_id 双轨 ID 体系 + 分析日志
 
-**决策**：`AnalyzeRequest` / `AnalyzeResponse` 增加 `openid` 字段（可选），每次分析后将关键元信息一行 JSON 追加到 `data/analysis_log.jsonl`，同时新增 `GET /api/analyses` 接口供运维 / 后续分析消费。
+**决策**：拆分 ID 为两个维度：
 
-**为什么需要**：
-- 真实业务里"AI 当时建议什么"和"客户最后买了没"必须通过同一个外部 ID（如微信 openid / CRM 客户 ID）关联。无此 ID 就没法做事后复盘 / 训练数据回收。
-- 把日志写在文件而不是数据库：单机 Demo 阶段无依赖、可被任何 ELK / 数据团队直接消费、人肉审计也读得懂。
-- 不写完整 Trace 进日志：Trace 太大，原始 Trace 已经在前端展示给销售看；日志只保留"销售拍板需要的事实"。
+- **`external_id`**（客户级，可选）：对外业务系统的客户/会话 ID（如 CRM 客户 ID / 微信 openid / 邮箱 hash / 表单 submission ID）。本项目不解析其内容，作为 customer 维度的 join key。
+- **`analysis_id`**（本次分析的精准 ID，服务端 UUID 必产）：每次 `POST /api/analyze` 生成一个 uuid4 hex，回传给前端；feedback 时优先用它做 1:1 精准 join。
+
+每次分析后把关键元信息一行 JSON 追加到 `data/analysis_log.jsonl`；`GET /api/analyses` 支持按 `external_id` 过滤。
+
+**为什么需要双轨**：
+- 真实业务里"AI 当时建议什么"和"客户最后买了没"必须通过 ID 关联。**最初的设计只用一个 `openid` 字段，叠加了 customer 维度和 analysis 维度**——一旦同一客户多次咨询，feedback 只能落到"最近一次 analysis"上（attribution 模糊，Q9 指标会被污染）。
+- 拆成两个维度后：feedback 默认携带 `analysis_id` 精准回填；线下手填反馈只有 `external_id` 时退化到"最近一次"模糊匹配，但会被 analytics 显式标注为 `fuzzy`。
+- "openid" 这个名字在腾讯生态里特指 user-app 绑定 ID，作为通用 join key 命名歧义大；改成 `external_id` 中性，能覆盖任意来源。
+- 写文件而不是数据库：单机 Demo 阶段无依赖、可被任何 ELK / 数据团队直接消费、人肉审计也读得懂。
 
 **关键文件**：
-- `backend/schemas.py` — `AnalyzeRequest.openid` / `AnalyzeResponse.openid`
+- `backend/schemas.py` — `AnalyzeRequest.external_id` / `AnalyzeResponse.{external_id, analysis_id}` / `FeedbackRequest.{analysis_id, external_id, join_key_kind()}`
 - `backend/persistence.py` — `append_jsonl` / `read_jsonl` / `iso_now`
-- `backend/main.py` — `_record_analysis` / `GET /api/analyses`
+- `backend/main.py` — `analyze()` 内 `uuid.uuid4().hex` 生成 analysis_id；`_record_analysis` 写入；`GET /api/analyses` 按 external_id 过滤
 
-**关键字段**：`timestamp` · `openid` · 截断后的 `lead_text` · `lead_tier` · `intent_level` · `recommended_product` · `needs_human_review` · `triggered_rules` · `prompt_version`（取自 init trace 的 skill@version）· `trace_step_count`
+**关键字段**：`timestamp` · `analysis_id` · `external_id` · 截断后的 `lead_text` · `lead_tier` · `intent_level` · `recommended_product` · `needs_human_review` · `triggered_rules` · `prompt_version` · `trace_step_count`
 
 **⛯ 你可以这样讲**：
 
-> "这是把'AI 决策'和'真实业务结果'关联起来的最低成本通道。openid 我们不解析、不约束格式，本质就是 join key；任何外部系统的客户 ID 都能接进来。日志走 jsonl 是因为它最廉价：append-only、可人肉读、任何数据团队都能消费。"
+> "我把客户维度和分析维度分开——`external_id` 是客户引用，可以接任何外部系统；`analysis_id` 是每次分析的精准 UUID，feedback 用它能 1:1 回填。这条边界让'同一客户多次咨询'这种常见场景的 attribution 不再含糊，Q9 的两个主指标也不会被混淆样本拖累。"
 
 **可能的追问**：
-- Q: "并发写入安不安全？"
+- Q: "为什么不直接用一个字段、上游负责保证唯一？"
+- A: 上游不一定可控（线下表单、手填邮件咨询都可能没有任何外部 ID）。服务端必产的 analysis_id 是兜底保证，让"精准 join"在任何场景下都能工作。
+- Q: "并发写入 jsonl 安不安全？"
 - A: append + 单行 JSON 在 Linux 上对短 write 是原子的。如果上量需要更稳，可以换 SQLite 或者直接走 ELK。这里是 Demo 阶段的 evidence。
 
 ---
@@ -744,34 +752,38 @@ def _build_user_prompt(self, lead_text: str) -> str:
 ## D17 · 反馈闭环 + 混淆矩阵
 
 **决策**：增加两个接口：
-- `POST /api/feedback` 销售提交"实际成交结果"（`outcome` ∈ deal / no_deal / pending / lost），写入 `data/feedback_log.jsonl`
-- `GET /api/analytics/feedback` 用 openid join 最近一次 analysis，聚合出：
+- `POST /api/feedback` 销售提交"实际成交结果"（`outcome` ∈ deal / no_deal / pending / lost），同时携带 `analysis_id`（精准维度）和 `external_id`（客户维度）；至少要给一个，否则 400。写入 `data/feedback_log.jsonl`。
+- `GET /api/analytics/feedback` 优先按 `analysis_id` 精准 join，否则按 `external_id` + 最近一次退化模糊匹配，聚合出：
   - `confusion_matrix`：预测 lead_tier (A/B/C/D + UNMATCHED) × outcome 的二维计数
-  - `surprises`：AI 高估（A → no_deal/lost）/ 低估（D → deal）的样本，最多 10 条
-  - `no_match_feedback_count`：feedback 中 openid 在 analysis_log 找不到的数量（数据一致性指标）
+  - `surprises`：AI 高估（A → no_deal/lost）/ 低估（D → deal）的样本，最多 10 条；每条带 `match_kind` 标注
+  - `no_match_feedback_count`：feedback 完全 join 不上 analysis_log 的数量
+  - `match_kind_breakdown`：precise / fuzzy / orphan 三档计数（数据精度指标）
 
 **为什么需要**：
 - "AI 判断 vs 真实结果"是迭代方法论唯一硬证据。没有它，prompt / Skill / playbook 怎么改都是拍脑袋。
 - `surprises` 故意只挑两类极端打脸样本，让评审 / 销售一眼看到"AI 哪里最不靠谱"，比导出全部数据更有价值。
-- `no_match` 同时暴露数据一致性问题：销售有没有给"AI 没分析过"的 openid 提交反馈？如果有，说明上下游 ID 体系还没打通。
+- `match_kind_breakdown` 暴露数据精度问题：precise 高说明反馈链路打通了，fuzzy 多说明销售在用客户维度填、attribution 有水分，orphan 多说明上下游 ID 体系还没接好。
 - Outcome 用 Pydantic Literal 强约束 → 非法 outcome 直接 422，业务层永远拿到的是合法枚举。
 
 **关键文件**：
-- `backend/schemas.py` — `FeedbackRequest` + `Outcome` Literal
-- `backend/main.py` — `POST /api/feedback` / `GET /api/analytics/feedback`
-- `frontend/index.html` `app.js` — 结果区下的"销售反馈"小卡片 + 顶栏"📊 反馈统计"浮层
+- `backend/schemas.py` — `FeedbackRequest.{analysis_id, external_id, join_key_kind()}` + `Outcome` Literal
+- `backend/main.py` — `POST /api/feedback` 必须至少一个 ID；`GET /api/analytics/feedback` 两套索引（`by_analysis_id` + `latest_by_external_id`）
+- `frontend/index.html` `app.js` — 结果区下的"销售反馈"小卡片（自动带上 `analysis_id`）+ 顶栏"📊 反馈统计"浮层（多 match_kind 计数 pill）
 
 **实现细节**：
-- "最近一次" join：同一个 openid 可能被分析多次（用户改了线索文本再点分析），以 timestamp 最大的那条为准——更接近"销售看到反馈表单时 AI 给的建议"。
-- 这是基础设施，不是 ML pipeline；重点是"可观测 + 可累积"。后续真要做 RLHF / 自动 A/B，这层日志就是 ground truth。
+- 精准 join：`feedback.analysis_id → analyses[analysis_id]` 1:1，没有 attribution 模糊。
+- 退化模糊：仅当 feedback 没带 `analysis_id` 时才用 `external_id` + 最近一次匹配，主要服务线下手填反馈或前 L2 历史数据。
+- 是基础设施而非 ML pipeline；重点是"可观测 + 可累积"。后续真要做 RLHF / 自动 A/B，这层日志就是 ground truth。
 
 **⛯ 你可以这样讲**：
 
-> "把这套系统看成 closed loop：AI 给建议 → 销售拿走执行 → 真实结果回流 → 混淆矩阵告诉我们 AI 哪里高估、哪里低估。surprises 是我特意留的'放大镜'，因为方法论迭代时人类只关心两个问题：你判 A 的没成交？为什么？你判 D 的居然成了？为什么？这两条尾巴就是下一版 prompt / playbook 的输入。"
+> "L2 重构之后 feedback 的 join 是分两档的——精准 1:1 走 analysis_id，模糊 fallback 走 external_id + 最近一次。analytics 把这两档显式区分计数（match_kind_breakdown），让团队随时能看到'我们到底有多少 attribution 是干净的'。如果 fuzzy 占比上来了，说明销售在用客户维度凑数、得回去看是不是哪里反馈链路断了。"
 
 **可能的追问**：
-- Q: "同一个 openid 多次反馈怎么算？"
-- A: 当前是全部计入混淆矩阵（每条反馈独立计数），因为同一客户多轮跟进的每一次状态变化都是信号。如果业务上只关心终局，加一层"取最新反馈"过滤即可。
+- Q: "同一个 analysis_id 多次反馈怎么算？"
+- A: 全部计入混淆矩阵（每条反馈独立计数），因为同一分析的多轮跟进状态变化都是信号。如果业务上只关心终局，加一层"取最新反馈"过滤即可。
+- Q: "fuzzy 匹配会不会把 A 客户的 feedback 错算到 B 分析上？"
+- A: fuzzy 匹配只发生在同一 external_id 内部（取该客户的最近一次分析），不跨客户。但同一客户多次分析之间仍可能错位——这是 fuzzy 模式的固有 trade-off，所以才需要 `match_kind` 字段让 attribution 精度可观测。
 
 ---
 
